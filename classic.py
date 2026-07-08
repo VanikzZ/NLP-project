@@ -3,20 +3,89 @@ from sklearn.metrics.pairwise import cosine_similarity
 from config import nlp, embedder, sentiment_analyzer
 
 
+TOPIC_DESCRIPTIONS = {
+    "экономика": (
+        "Тема: экономика, бизнес, финансы, компании, прибыль, рынок, "
+        "инвестиции, деньги, бюджет, акции, производство, торговля, продажи."
+    ),
+    "образование": (
+        "Тема: образование, школа, университет, студенты, ученики, экзамены, "
+        "обучение, курсы, преподаватели, лекции, учебные программы."
+    ),
+    "спорт": (
+        "Тема: спорт, футбол, баскетбол, матч, турнир, чемпионат, команда, "
+        "игрок, тренер, гол, победа, поражение, финал, соревнования."
+    ),
+    "политика": (
+        "Тема: политика, правительство, президент, парламент, выборы, закон, "
+        "партия, министр, государство, дипломатия, санкции, власть."
+    ),
+    "наука": (
+        "Тема: наука, исследование, учёные, эксперимент, открытие, теория, "
+        "лаборатория, университет, статья, гипотеза, клинические испытания."
+    ),
+    "технологии": (
+        "Тема: технологии, IT, программирование, искусственный интеллект, "
+        "компьютеры, робототехника, приложение, софт, алгоритмы, данные, стартап."
+    ),
+    "медицина": (
+        "Тема: медицина, здоровье, болезнь, лечение, врач, пациент, диагноз, "
+        "лекарство, терапия, клиника, диабет, симптомы, медицинские испытания."
+    ),
+}
+
+
 def classify_sentiment(text):
     result = sentiment_analyzer(text)[0]
-    label = result['label']
-    score = result['score']
-    
+    label = result["label"]
+    score = result["score"]
+
     return {label: score}
 
 
+def _softmax(scores, temperature=0.08):
+    """Convert similarity scores into sharper pseudo-probabilities."""
+    scores = np.array(scores, dtype=float)
+    scores = scores / temperature
+    scores = scores - np.max(scores)
+    exp_scores = np.exp(scores)
+    return exp_scores / exp_scores.sum()
+
+
+def _get_label_text(label):
+    """Turn a short label into a richer text that the embedder can compare better."""
+    normalized = label.strip().lower()
+    return TOPIC_DESCRIPTIONS.get(
+        normalized,
+        f"Тема: {label}. Текст относится к теме {label}, содержит связанные события, факты и термины.",
+    )
+
+
+def _split_into_sentences(text):
+    doc = nlp(text)
+    sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    return sentences or [text.strip()]
+
+
 def classify_classic(text, labels):
-    text_emb = embedder.encode([text])[0]
-    label_embs = embedder.encode(labels)
-    sims = cosine_similarity([text_emb], label_embs)[0]
-    probs = np.exp(sims) / np.sum(np.exp(sims))
-    return dict(zip(labels, probs))
+    clean_labels = [label.strip() for label in labels if label.strip()]
+    if not text.strip() or not clean_labels:
+        return {}
+
+    label_texts = [_get_label_text(label) for label in clean_labels]
+    label_embs = embedder.encode(label_texts, normalize_embeddings=True)
+
+    sentences = _split_into_sentences(text)
+    sentence_embs = embedder.encode(sentences, normalize_embeddings=True)
+
+    sim_matrix = cosine_similarity(sentence_embs, label_embs)
+
+    # A long text may contain several themes. One average embedding for the whole text
+    # mixes them together, so we score each topic by its best matching sentence.
+    scores = sim_matrix.max(axis=0)
+
+    probs = _softmax(scores, temperature=0.08)
+    return dict(zip(clean_labels, probs))
 
 
 def summarize_classic(text, num_sentences=2):
