@@ -12,7 +12,9 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
+from llm_config import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER, get_llm_provider
+from providers import call_llm, check_llm
+from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMPT, SUMMARIZATION_PROMPT, NER_PROMPT
 
 load_dotenv(".env")
 
@@ -27,6 +29,14 @@ TOPIC_LABELS = [
     "технологии",
     "медицина",
 ]
+
+ENTITY_TYPES = ["PER", "ORG", "LOC", "DATE", "MONEY"]
+
+
+def get_active_llm() -> tuple[str, str]:
+    provider_name, cfg = get_llm_provider(DEFAULT_LLM_PROVIDER)
+    model = DEFAULT_LLM_MODEL or cfg["default_model"]
+    return provider_name, model
 
 
 async def send_long(update: Update, text: str):
@@ -55,14 +65,23 @@ def format_scores(scores: dict[str, float]) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    provider_name, model = get_active_llm()
     text = (
         "Привет! Я NLP-бот для мини-проекта.\n\n"
-        "Команды:\n"
-        "/classify текст — определить тему\n"
-        "/sentiment текст — определить тональность\n"
-        "/summary текст — сделать краткую выжимку\n"
-        "/ner текст — найти сущности\n\n"
-        "Можно просто отправить обычный текст — я сделаю классификацию по темам."
+        "Классические команды:\n"
+        "/classify текст — определить тему классическим способом\n"
+        "/sentiment текст — определить тональность классическим способом\n"
+        "/summary текст — сделать классическую выжимку\n"
+        "/ner текст — найти сущности классическим способом\n\n"
+        "LLM-команды:\n"
+        "/llm_test — проверить подключение к LLM API\n"
+        "/llm_classify текст — определить тему через LLM\n"
+        "/llm_sentiment текст — определить тональность через LLM\n"
+        "/llm_summary текст — сделать выжимку через LLM\n"
+        "/llm_ner текст — найти сущности через LLM\n"
+        "/compare текст — сравнить классическую и LLM-классификацию\n\n"
+        f"Активная LLM: {provider_name} / {model}\n\n"
+        "Можно просто отправить обычный текст — я сделаю классическую классификацию."
     )
     await send_long(update, text)
 
@@ -73,9 +92,10 @@ async def classify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("После /classify пришли текст. Например: /classify Учёные открыли новый метод лечения диабета")
         return
 
-    await update.message.reply_text("Классифицирую текст...")
+    await update.message.reply_text("Классифицирую текст классическим способом...")
+    from classic import classify_classic
     scores = await asyncio.to_thread(classify_classic, text, TOPIC_LABELS)
-    await send_long(update, "Результат классификации:\n" + format_scores(scores))
+    await send_long(update, "Классическая классификация:\n" + format_scores(scores))
 
 
 async def sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,9 +104,10 @@ async def sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("После /sentiment пришли текст. Например: /sentiment Мне очень понравился этот проект")
         return
 
-    await update.message.reply_text("Определяю тональность...")
+    await update.message.reply_text("Определяю тональность классическим способом...")
+    from classic import classify_sentiment
     result = await asyncio.to_thread(classify_sentiment, text)
-    await send_long(update, "Тональность:\n" + format_scores(result))
+    await send_long(update, "Классическая тональность:\n" + format_scores(result))
 
 
 async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,9 +116,10 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("После /summary пришли текст, который нужно сократить.")
         return
 
-    await update.message.reply_text("Делаю выжимку...")
+    await update.message.reply_text("Делаю классическую выжимку...")
+    from classic import summarize_classic
     result = await asyncio.to_thread(summarize_classic, text, 3)
-    await send_long(update, "Выжимка:\n" + result)
+    await send_long(update, "Классическая выжимка:\n" + result)
 
 
 async def ner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,14 +128,98 @@ async def ner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("После /ner пришли текст. Например: /ner Алексей Морозов работает в ТехноИнвест в Минске")
         return
 
-    await update.message.reply_text("Ищу сущности...")
+    await update.message.reply_text("Ищу сущности классическим способом...")
+    from classic import ner_classic
     entities = await asyncio.to_thread(ner_classic, text, "spaCy")
     if not entities:
         await update.message.reply_text("Сущности не найдены.")
         return
 
     lines = [f"{entity['text']} → {entity['type']}" for entity in entities]
-    await send_long(update, "Сущности:\n" + "\n".join(lines))
+    await send_long(update, "Классические сущности:\n" + "\n".join(lines))
+
+
+async def llm_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Проверяю подключение к LLM API...")
+    provider_name, model = get_active_llm()
+    result = await asyncio.to_thread(check_llm, provider_name, model)
+    await send_long(update, result)
+
+
+async def llm_classify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_text(update)
+    if not text:
+        await update.message.reply_text("После /llm_classify пришли текст.")
+        return
+
+    await update.message.reply_text("Классифицирую через LLM...")
+    provider_name, model = get_active_llm()
+    prompt = CLASSIFICATION_PROMPT.format(labels=", ".join(TOPIC_LABELS), text=text[:3000])
+    result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 80)
+    await send_long(update, "LLM-классификация:\n" + result)
+
+
+async def llm_sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_text(update)
+    if not text:
+        await update.message.reply_text("После /llm_sentiment пришли текст.")
+        return
+
+    await update.message.reply_text("Определяю тональность через LLM...")
+    provider_name, model = get_active_llm()
+    prompt = SENTIMENT_PROMPT.format(text=text[:3000])
+    result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 80)
+    await send_long(update, "LLM-тональность:\n" + result)
+
+
+async def llm_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_text(update)
+    if not text:
+        await update.message.reply_text("После /llm_summary пришли текст.")
+        return
+
+    await update.message.reply_text("Делаю выжимку через LLM...")
+    provider_name, model = get_active_llm()
+    prompt = SUMMARIZATION_PROMPT.format(num_sentences=3, text=text[:4000])
+    result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.2, 400)
+    await send_long(update, "LLM-выжимка:\n" + result)
+
+
+async def llm_ner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_text(update)
+    if not text:
+        await update.message.reply_text("После /llm_ner пришли текст.")
+        return
+
+    await update.message.reply_text("Ищу сущности через LLM...")
+    provider_name, model = get_active_llm()
+    prompt = NER_PROMPT.format(entity_types=", ".join(ENTITY_TYPES), text=text[:3000])
+    result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 500)
+    await send_long(update, "LLM-сущности:\n" + result)
+
+
+async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_text(update)
+    if not text:
+        await update.message.reply_text("После /compare пришли текст.")
+        return
+
+    await update.message.reply_text("Сравниваю классификацию: классика vs LLM...")
+
+    from classic import classify_classic
+    classic_scores = await asyncio.to_thread(classify_classic, text, TOPIC_LABELS)
+
+    provider_name, model = get_active_llm()
+    prompt = CLASSIFICATION_PROMPT.format(labels=", ".join(TOPIC_LABELS), text=text[:3000])
+    llm_result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 80)
+
+    answer = (
+        "Классическая классификация:\n"
+        f"{format_scores(classic_scores)}\n\n"
+        "LLM-классификация:\n"
+        f"{llm_result}"
+    )
+    await send_long(update, answer)
 
 
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,9 +227,10 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
-    await update.message.reply_text("Понял текст. По умолчанию запускаю классификацию...")
+    await update.message.reply_text("Понял текст. По умолчанию запускаю классическую классификацию...")
+    from classic import classify_classic
     scores = await asyncio.to_thread(classify_classic, text, TOPIC_LABELS)
-    await send_long(update, "Результат классификации:\n" + format_scores(scores))
+    await send_long(update, "Классическая классификация:\n" + format_scores(scores))
 
 
 def main():
@@ -144,6 +251,12 @@ def main():
     app.add_handler(CommandHandler("sentiment", sentiment_command))
     app.add_handler(CommandHandler("summary", summary_command))
     app.add_handler(CommandHandler("ner", ner_command))
+    app.add_handler(CommandHandler("llm_test", llm_test_command))
+    app.add_handler(CommandHandler("llm_classify", llm_classify_command))
+    app.add_handler(CommandHandler("llm_sentiment", llm_sentiment_command))
+    app.add_handler(CommandHandler("llm_summary", llm_summary_command))
+    app.add_handler(CommandHandler("llm_ner", llm_ner_command))
+    app.add_handler(CommandHandler("compare", compare_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 
     print("Telegram NLP bot is starting...")

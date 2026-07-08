@@ -1,13 +1,8 @@
-import os
-from dotenv import load_dotenv
 import spacy
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
 
-load_dotenv()
-
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+from llm_config import LLM_PROVIDERS
 
 print("Loading models...")
 
@@ -17,24 +12,6 @@ sentiment_analyzer = pipeline("sentiment-analysis", model="blanchefort/rubert-ba
 
 print("Models are loaded!")
 
-
-LLM_PROVIDERS = {
-    "Mistral": {
-        "url": "https://api.mistral.ai/v1/chat/completions",
-        "key": MISTRAL_API_KEY,
-        "default_model": "mistral-small",
-    },
-    "OpenRouter Tencent": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "key": OPENROUTER_API_KEY,
-        "default_model": "tencent/hy3:free",
-    },
-    "OpenRouter Qwen": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "key": OPENROUTER_API_KEY,
-        "default_model": "qwen/qwen3-next-80b-a3b-instruct:free"
-    }
-}
 
 CLASSIC_PROVIDERS = {
     "spaCy": "",
