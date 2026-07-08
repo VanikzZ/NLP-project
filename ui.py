@@ -4,6 +4,7 @@ from config import LLM_PROVIDERS, CLASSIC_PROVIDERS
 from providers import call_llm
 from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
 from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMT, SUMMARIZATION_PROMPT, NER_PROMPT
+from datasets_loader import show_all_datasets_ui
 
 
 DEFAULT_TEXT = (
@@ -177,7 +178,7 @@ def create_ui():
     if not text.strip():
         st.warning("Введите текст для анализа.")
         return
-    tab1, tab2, tab3 = st.tabs(["🏷️ Классификация", "📝 Суммаризация", "🔍 NER"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🏷️ Классификация", "📝 Суммаризация", "🔍 NER", "📊 Датасеты"])
 
     with tab1:
         render_classification_tab(settings, text)
@@ -185,3 +186,5 @@ def create_ui():
         render_summarization_tab(settings, text)
     with tab3:
         render_ner_tab(settings, text)
+    with tab4:
+        show_all_datasets_ui()
