@@ -1,0 +1,8 @@
+streamlit
+spacy
+sentence-transformers
+scikit-learn
+numpy
+requests
+python-dotenv
+natasha
