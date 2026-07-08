@@ -1,5 +1,3 @@
-"""Вызов LLM API."""
-
 import requests
 from config import LLM_PROVIDERS
 

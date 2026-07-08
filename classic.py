@@ -12,7 +12,7 @@ def classify_sentiment(text):
 
 
 def classify_classic(text, labels):
-    text_emb = embedder.encode([text[:1000]])[0]
+    text_emb = embedder.encode([text])[0]
     label_embs = embedder.encode(labels)
     sims = cosine_similarity([text_emb], label_embs)[0]
     probs = np.exp(sims) / np.sum(np.exp(sims))

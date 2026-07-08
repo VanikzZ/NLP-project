@@ -1,5 +1,3 @@
-"""Загрузка моделей и чтение API ключей."""
-
 import os
 from dotenv import load_dotenv
 import spacy
