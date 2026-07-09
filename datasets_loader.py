@@ -9,7 +9,7 @@ import streamlit as st
 
 def load_sentiment_dataset():
     print("Загружаем rotten_tomatoes...")
-    return load_dataset("rotten_tomatoes", split="train")
+    return load_dataset("cornell-movie-review-data/rotten_tomatoes", split="train")
 
 
 def analyze_sentiment(dataset):
