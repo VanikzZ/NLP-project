@@ -5,6 +5,7 @@ from providers import call_llm
 from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
 from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMT, SUMMARIZATION_PROMPT, NER_PROMPT
 from datasets_loader import show_all_datasets_ui
+from rag_agent import create_vectorstore, create_rag_chain, run_rag
 
 
 DEFAULT_TEXT = (
@@ -170,6 +171,42 @@ def render_ner_tab(settings, text):
                     st.caption("Не удалось распарсить JSON.")
 
 
+def render_rag_tab(text):
+    st.header("🤖 RAG (LangChain) — вопрос-ответ с векторным поиском")
+    st.markdown(
+        "Retrieval-Augmented Generation: поиск релевантного контекста + генерация ответа.\n"
+        "Использует **LangChain** + **ChromaDB** + **эмбеддинги**."
+    )
+
+    if not text.strip():
+        st.warning("Введите текст.")
+        return
+
+    if "vectorstore" not in st.session_state:
+        st.session_state.vectorstore = None
+        st.session_state.chain = None
+
+    if st.button("📥 Загрузить текст в RAG"):
+        with st.spinner("Разбиваем текст, строим векторную базу..."):
+            vectorstore, num_chunks = create_vectorstore(text)
+            st.session_state.vectorstore = vectorstore
+            st.success(f"✅ Текст разбит на {num_chunks} чанков. Векторная база готова!")
+
+    question = st.text_input("Вопрос", placeholder="Задайте вопрос по тексту...")
+
+    if question and st.session_state.vectorstore:
+        # TODO: подключить реальный LLM через провайдеров
+        st.info("⚙️ Требуется LLM. В демо-режиме показываем найденные чанки.")
+
+        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.invoke(question)
+
+        st.markdown("**🔍 Найденные чанки (контекст):**")
+        for i, doc in enumerate(docs):
+            with st.expander(f"Чанк {i+1}"):
+                st.text(doc.page_content)
+
+
 def create_ui():
     settings = render_sidebar()
     st.title("🧠 NLP Platform — классика vs LLM")
@@ -178,7 +215,7 @@ def create_ui():
     if not text.strip():
         st.warning("Введите текст для анализа.")
         return
-    tab1, tab2, tab3, tab4 = st.tabs(["🏷️ Классификация", "📝 Суммаризация", "🔍 NER", "📊 Датасеты"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏷️ Классификация", "📝 Суммаризация", "🔍 NER", "📊 Датасеты", "🤖 RAG (LangChain)"])
 
     with tab1:
         render_classification_tab(settings, text)
@@ -188,3 +225,5 @@ def create_ui():
         render_ner_tab(settings, text)
     with tab4:
         show_all_datasets_ui()
+    with tab5:
+        render_rag_tab(text)

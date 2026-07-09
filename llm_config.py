@@ -7,7 +7,7 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Defaults are kept in one place so Streamlit, Telegram and tests use the same config.
-DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "OpenRouter Qwen")
+DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "Mistral")
 DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "")
 
 LLM_PROVIDERS = {
