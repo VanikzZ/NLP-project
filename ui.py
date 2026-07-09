@@ -1,5 +1,7 @@
 import streamlit as st
 import json
+import html
+import re
 from config import LLM_PROVIDERS, CLASSIC_PROVIDERS
 from providers import call_llm
 from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
@@ -7,6 +9,116 @@ from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMT, SUMMARIZATION_PROMPT
 from datasets_loader import show_all_datasets_ui
 from rag_agent import create_vectorstore, answer_with_rag
 
+NER_COLORS = {
+    "PER": "#2563eb",
+    "PERSON": "#2563eb",
+    "ORG": "#16a34a",
+    "LOC": "#9333ea",
+    "LOCATION": "#9333ea",
+    "GPE": "#9333ea",
+    "DATE": "#f97316",
+    "TIME": "#f97316",
+    "MONEY": "#dc2626",
+    "PERCENT": "#dc2626",
+    "MISC": "#64748b",
+}
+
+
+def normalize_ner_label(label):
+    label = str(label).upper().strip()
+    mapping = {
+        "PERSON": "PER",
+        "PER": "PER",
+        "ORG": "ORG",
+        "ORGANIZATION": "ORG",
+        "LOC": "LOC",
+        "LOCATION": "LOC",
+        "GPE": "LOC",
+        "DATE": "DATE",
+        "TIME": "TIME",
+        "MONEY": "MONEY",
+        "PERCENT": "PERCENT",
+    }
+    return mapping.get(label, label)
+
+
+def extract_ner_items(entities):
+    items = []
+
+    if not entities:
+        return items
+
+    for ent in entities:
+        if isinstance(ent, dict):
+            ent_text = ent.get("text") or ent.get("word") or ent.get("entity") or ent.get("entity_text")
+            ent_label = ent.get("label") or ent.get("type") or ent.get("entity_group") or ent.get("tag")
+        elif isinstance(ent, (list, tuple)) and len(ent) >= 2:
+            ent_text, ent_label = ent[0], ent[1]
+        else:
+            continue
+
+        if ent_text and ent_label:
+            items.append((str(ent_text), normalize_ner_label(ent_label)))
+
+    return items
+
+
+def render_ner_highlighted_text(source_text, entities, title="Подсветка сущностей"):
+    items = extract_ner_items(entities)
+
+    if not source_text or not items:
+        return
+
+    spans = []
+    lowered = source_text.lower()
+
+    for ent_text, ent_label in items:
+        start = 0
+        target = ent_text.lower()
+
+        while True:
+            idx = lowered.find(target, start)
+            if idx == -1:
+                break
+
+            end = idx + len(ent_text)
+
+            if not any(idx < old_end and end > old_start for old_start, old_end, _ in spans):
+                spans.append((idx, end, ent_label))
+
+            start = end
+
+    if not spans:
+        return
+
+    spans.sort(key=lambda x: x[0])
+
+    result = []
+    last = 0
+
+    for start, end, label in spans:
+        result.append(html.escape(source_text[last:start]))
+
+        color = NER_COLORS.get(label, "#64748b")
+        entity_text = html.escape(source_text[start:end])
+
+        result.append(
+            f'<span style="background:{color}; color:white; padding:2px 6px; '
+            f'border-radius:6px; font-weight:600; white-space:nowrap;">'
+            f'{entity_text} <sup>{label}</sup></span>'
+        )
+
+        last = end
+
+    result.append(html.escape(source_text[last:]))
+
+    st.markdown(f"**{title}:**", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='line-height:2.2; font-size:17px;'>"
+        + "".join(result)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 DEFAULT_TEXT = (
     "Совет директоров компании «ТехноИнвест» 15 марта 2026 года объявил о рекордной "
@@ -17,6 +129,161 @@ DEFAULT_TEXT = (
     "Учёные из MIT представили новый метод лечения диабета 2 типа. Профессор Джон Смит "
     "утверждает, что клинические испытания начнутся в июле 2027 года. Бюджет проекта — €120 млн."
 )
+
+
+
+
+ENTITY_COLORS = {
+    "PER": "#2563eb",
+    "PERSON": "#2563eb",
+    "ORG": "#16a34a",
+    "LOC": "#9333ea",
+    "GPE": "#9333ea",
+    "DATE": "#ea580c",
+    "TIME": "#ea580c",
+    "MONEY": "#dc2626",
+    "MISC": "#64748b",
+}
+
+ENTITY_NAMES = {
+    "PER": "человек",
+    "PERSON": "человек",
+    "ORG": "организация",
+    "LOC": "локация",
+    "GPE": "локация",
+    "DATE": "дата",
+    "TIME": "время",
+    "MONEY": "деньги",
+    "MISC": "прочее",
+}
+
+
+def normalize_entity_type(entity_type):
+    entity_type = str(entity_type or "MISC").upper().strip()
+    if entity_type == "PERSON":
+        return "PER"
+    if entity_type == "GPE":
+        return "LOC"
+    return entity_type
+
+
+def parse_llm_entities(raw_result):
+    """Parse LLM NER answer into a list of {text, type} dicts."""
+    candidate = raw_result.strip()
+    if "```" in candidate:
+        match = re.search(r"```(?:json)?\s*(.*?)```", candidate, flags=re.S | re.I)
+        if match:
+            candidate = match.group(1).strip()
+
+    parsed = json.loads(candidate)
+    if isinstance(parsed, dict):
+        parsed = parsed.get("entities", [])
+
+    entities = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        ent_text = item.get("text") or item.get("entity") or item.get("name")
+        ent_type = item.get("type") or item.get("label") or item.get("entity_type")
+        if ent_text and ent_type:
+            entities.append({"text": str(ent_text), "type": normalize_entity_type(ent_type)})
+    return entities
+
+
+def find_entity_spans(text, entities):
+    spans = []
+    occupied = [False] * len(text)
+    for ent in sorted(entities, key=lambda e: len(e.get("text", "")), reverse=True):
+        ent_text = str(ent.get("text", "")).strip()
+        ent_type = normalize_entity_type(ent.get("type"))
+        if not ent_text:
+            continue
+        start = 0
+        while True:
+            idx = text.find(ent_text, start)
+            if idx == -1:
+                break
+            end = idx + len(ent_text)
+            if not any(occupied[idx:end]):
+                spans.append((idx, end, ent_type))
+                for i in range(idx, end):
+                    occupied[i] = True
+            start = end
+    return sorted(spans, key=lambda x: x[0])
+
+
+
+
+def entity_badge_html(entity_type):
+    ent_type = normalize_entity_type(entity_type)
+    color = ENTITY_COLORS.get(ent_type, "#64748b")
+    title = ENTITY_NAMES.get(ent_type, ent_type)
+    return (
+        f'<span title="{html.escape(title)}" '
+        f'style="display:inline-block;padding:2px 7px;border-radius:999px;'
+        f'background:{color};color:white;font-weight:800;font-size:0.78rem;">'
+        f'{html.escape(ent_type)}</span>'
+    )
+
+
+def render_entity_list_item(ent):
+    ent_text = html.escape(str(ent.get("text", "")))
+    ent_type = normalize_entity_type(ent.get("type"))
+    badge = entity_badge_html(ent_type)
+    st.markdown(f'• <b>{ent_text}</b> → {badge}', unsafe_allow_html=True)
+
+
+def render_entity_legend(entities):
+    used_types = []
+    for ent in entities:
+        ent_type = normalize_entity_type(ent.get("type"))
+        if ent_type not in used_types:
+            used_types.append(ent_type)
+    if not used_types:
+        return
+
+    badges = []
+    for ent_type in used_types:
+        color = ENTITY_COLORS.get(ent_type, "#64748b")
+        title = ENTITY_NAMES.get(ent_type, ent_type)
+        badges.append(
+            f'<span style="display:inline-block;margin:0 8px 8px 0;padding:4px 9px;'
+            f'border-radius:999px;background:{color};color:white;font-weight:700;">'
+            f'{html.escape(ent_type)} · {html.escape(title)}</span>'
+        )
+    st.markdown("".join(badges), unsafe_allow_html=True)
+
+
+def render_ner_highlighted_text(text, entities):
+    if not entities:
+        st.info("Нет сущностей для подсветки.")
+        return
+    spans = find_entity_spans(text, entities)
+    if not spans:
+        st.info("Сущности найдены, но их не получилось сопоставить с исходным текстом для подсветки.")
+        return
+
+    parts = []
+    last = 0
+    for start, end, ent_type in spans:
+        parts.append(html.escape(text[last:start]))
+        color = ENTITY_COLORS.get(ent_type, "#64748b")
+        label = html.escape(ent_type)
+        value = html.escape(text[start:end])
+        parts.append(
+            f'<span title="{label}" style="background:{color};color:white;'
+            f'padding:2px 5px;border-radius:6px;font-weight:700;white-space:pre-wrap;">'
+            f'{value}<sup style="margin-left:4px;font-size:0.7em;">{label}</sup></span>'
+        )
+        last = end
+    parts.append(html.escape(text[last:]))
+
+    html_text = "".join(parts).replace("\n", "<br>")
+    st.markdown(
+        f'<div style="line-height:2.1;font-size:1.02rem;border:1px solid #334155;'
+        f'border-radius:12px;padding:14px;background:rgba(148,163,184,0.08);">{html_text}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_sidebar():
@@ -125,6 +392,7 @@ def render_summarization_tab(settings, text):
 
 def render_ner_tab(settings, text):
     st.header("🔍 NER — распознавание сущностей")
+
     entity_types = st.multiselect(
         "Типы сущностей для LLM",
         ["PER", "ORG", "LOC", "DATE", "MONEY"],
@@ -132,43 +400,64 @@ def render_ner_tab(settings, text):
     )
 
     col1, col2 = st.columns(2)
+
     with col1:
         st.subheader(f"🔧 Классика ({settings['classic_method']})")
+
         if st.button("Запустить классический", key="ner_c"):
-            with st.spinner("..."):
+            with st.spinner("Ищем сущности классическим методом..."):
                 entities = ner_classic(text, method=settings["classic_method"])
-                if entities:
-                    for ent in entities:
-                        st.markdown(f"- **{ent['text']}** → `{ent['type']}`")
-                else:
-                    st.info("Сущности не найдены.")
+
+            if entities:
+                st.markdown("**Список сущностей:**")
+                for ent in entities:
+                    render_entity_list_item(ent)
+
+                st.markdown("**Подсветка в исходном тексте:**")
+                render_entity_legend(entities)
+                render_ner_highlighted_text(text, entities)
+            else:
+                st.info("Сущности не найдены.")
 
     with col2:
         st.subheader(f"🤖 LLM ({settings['llm_provider']})")
+
         if st.button("Запустить LLM", key="ner_l"):
-            with st.spinner("..."):
+            with st.spinner("Ищем сущности через LLM..."):
                 prompt = NER_PROMPT.format(
                     entity_types=", ".join(entity_types),
                     text=text[:2000],
                 )
+
                 result = call_llm(
                     provider=settings["llm_provider"],
                     model=settings["model"],
                     prompt=prompt,
                     temperature=0.0,
-                    max_tokens=500,
+                    max_tokens=700,
                 )
-                st.markdown(f"**Ответ:**\n\n```\n{result}\n```")
-                try:
-                    json_str = result.split("```")[1] if "```" in result else result
-                    if json_str.startswith("json"):
-                        json_str = json_str[4:]
-                    parsed = json.loads(json_str.strip())
-                    st.markdown("**Распознанные сущности:**")
+
+            st.markdown("**Сырой ответ LLM:**")
+            st.code(result, language="json")
+
+            try:
+                parsed = parse_llm_entities(result)
+
+                if parsed:
+                    st.markdown("**Список сущностей:**")
                     for ent in parsed:
-                        st.markdown(f"- **{ent['text']}** → `{ent['type']}`")
-                except Exception:
-                    st.caption("Не удалось распарсить JSON.")
+                        render_entity_list_item(ent)
+
+                    st.markdown("**Подсветка в исходном тексте:**")
+                    render_entity_legend(parsed)
+                    render_ner_highlighted_text(text, parsed)
+                else:
+                    st.info("LLM вернула пустой список сущностей.")
+
+            except Exception as exc:
+                st.error("Не удалось распарсить ответ LLM как JSON.")
+                st.caption(str(exc))
+
 
 
 def render_rag_tab(settings, text):
