@@ -1,8 +1,10 @@
 streamlit
 spacy
 sentence-transformers
-scikit-learn
+transformers
+torch
 numpy
+scikit-learn
 requests
 python-dotenv
 natasha
