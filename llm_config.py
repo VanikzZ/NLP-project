@@ -5,6 +5,7 @@ load_dotenv(".env")
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Defaults are kept in one place so Streamlit, Telegram and tests use the same config.
 DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "Mistral")
@@ -15,6 +16,7 @@ LLM_PROVIDERS = {
         "url": "https://api.mistral.ai/v1/chat/completions",
         "key": MISTRAL_API_KEY,
         "default_model": os.getenv("MISTRAL_MODEL", "mistral-small-latest"),
+        "missing_key_hint": "Добавь MISTRAL_API_KEY в файл .env.",
     },
     "OpenRouter Qwen": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
@@ -23,6 +25,13 @@ LLM_PROVIDERS = {
             "OPENROUTER_MODEL",
             "qwen/qwen3-next-80b-a3b-instruct:free",
         ),
+        "missing_key_hint": "Добавь OPENROUTER_API_KEY в файл .env.",
+    },
+    "OpenAI": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "key": OPENAI_API_KEY,
+        "default_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "missing_key_hint": "Добавь OPENAI_API_KEY в файл .env. ChatGPT Plus не заменяет API-ключ.",
     },
 }
 

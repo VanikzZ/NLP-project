@@ -1,7 +1,7 @@
 import os
 import requests
 
-from llm_config import LLM_PROVIDERS, get_llm_provider
+from llm_config import get_llm_provider
 
 
 def _headers(provider_name: str, api_key: str) -> dict[str, str]:
@@ -19,14 +19,17 @@ def _headers(provider_name: str, api_key: str) -> dict[str, str]:
     return headers
 
 
-def call_llm(provider: str | None, model: str | None, prompt: str, temperature: float = 0.3, max_tokens: int = 300) -> str:
+def call_llm(
+    provider: str | None,
+    model: str | None,
+    prompt: str,
+    temperature: float = 0.3,
+    max_tokens: int = 300,
+) -> str:
     provider_name, cfg = get_llm_provider(provider)
 
     if not cfg.get("key"):
-        return (
-            f"API ключ для {provider_name} не задан. "
-            "Добавь MISTRAL_API_KEY или OPENROUTER_API_KEY в файл .env."
-        )
+        return f"API ключ для {provider_name} не задан. {cfg.get('missing_key_hint', 'Проверь файл .env.')}"
 
     model_name = model or cfg["default_model"]
 
@@ -50,13 +53,13 @@ def call_llm(provider: str | None, model: str | None, prompt: str, temperature: 
         return f"Ошибка сети при обращении к LLM API: {e}"
 
     if response.status_code != 200:
-        return f"Ошибка API {response.status_code}: {response.text[:700]}"
+        return f"Ошибка API {response.status_code}: {response.text[:900]}"
 
     try:
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return f"Ошибка разбора ответа LLM: {e}. Ответ API: {response.text[:700]}"
+        return f"Ошибка разбора ответа LLM: {e}. Ответ API: {response.text[:900]}"
 
 
 def check_llm(provider: str | None = None, model: str | None = None) -> str:

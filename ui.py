@@ -5,7 +5,7 @@ from providers import call_llm
 from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
 from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMT, SUMMARIZATION_PROMPT, NER_PROMPT
 from datasets_loader import show_all_datasets_ui
-from rag_agent import create_vectorstore, create_rag_chain, run_rag
+from rag_agent import create_vectorstore, answer_with_rag
 
 
 DEFAULT_TEXT = (
@@ -171,40 +171,79 @@ def render_ner_tab(settings, text):
                     st.caption("Не удалось распарсить JSON.")
 
 
-def render_rag_tab(text):
-    st.header("🤖 RAG (LangChain) — вопрос-ответ с векторным поиском")
+def render_rag_tab(settings, text):
+    import hashlib
+
+    st.header("🤖 RAG — вопрос-ответ по документу")
     st.markdown(
-        "Retrieval-Augmented Generation: поиск релевантного контекста + генерация ответа.\n"
-        "Использует **LangChain** + **ChromaDB** + **эмбеддинги**."
+        "Retrieval-Augmented Generation: сначала ищем релевантные чанки в тексте, "
+        "потом передаём найденный контекст и вопрос в выбранную LLM."
     )
 
     if not text.strip():
         st.warning("Введите текст.")
         return
 
+    current_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+
     if "vectorstore" not in st.session_state:
         st.session_state.vectorstore = None
-        st.session_state.chain = None
+        st.session_state.num_chunks = 0
+        st.session_state.rag_text_hash = None
 
-    if st.button("📥 Загрузить текст в RAG"):
-        with st.spinner("Разбиваем текст, строим векторную базу..."):
-            vectorstore, num_chunks = create_vectorstore(text)
-            st.session_state.vectorstore = vectorstore
-            st.success(f"✅ Текст разбит на {num_chunks} чанков. Векторная база готова!")
+    if st.session_state.rag_text_hash != current_hash:
+        st.session_state.vectorstore = None
+        st.session_state.num_chunks = 0
+        st.session_state.rag_text_hash = None
+        st.info("Текст изменился. Нажмите «Загрузить текст в RAG», чтобы обновить векторную базу.")
 
-    question = st.text_input("Вопрос", placeholder="Задайте вопрос по тексту...")
+    col1, col2 = st.columns([1, 2])
 
-    if question and st.session_state.vectorstore:
-        # TODO: подключить реальный LLM через провайдеров
-        st.info("⚙️ Требуется LLM. В демо-режиме показываем найденные чанки.")
+    with col1:
+        if st.button("📥 Загрузить текст в RAG"):
+            with st.spinner("Разбиваем текст на чанки и строим эмбеддинги..."):
+                vectorstore, num_chunks = create_vectorstore(text)
+                st.session_state.vectorstore = vectorstore
+                st.session_state.num_chunks = num_chunks
+                st.session_state.rag_text_hash = current_hash
+                st.success(f"✅ Готово: {num_chunks} чанков")
 
-        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
-        docs = retriever.invoke(question)
+    with col2:
+        if st.session_state.vectorstore is not None and st.session_state.rag_text_hash == current_hash:
+            st.caption(f"Векторная база готова: {st.session_state.num_chunks} чанков")
+        else:
+            st.caption("Векторная база ещё не построена для текущего текста")
 
-        st.markdown("**🔍 Найденные чанки (контекст):**")
-        for i, doc in enumerate(docs):
-            with st.expander(f"Чанк {i+1}"):
-                st.text(doc.page_content)
+    question = st.text_input("Вопрос", placeholder="Например: какой бюджет проекта?")
+    top_k = st.slider("Количество чанков для контекста", 1, 5, 3)
+
+    if st.button("💬 Ответить по документу", key="rag_answer"):
+        if not question.strip():
+            st.warning("Введите вопрос.")
+            return
+
+        if st.session_state.vectorstore is None or st.session_state.rag_text_hash != current_hash:
+            st.warning("Сначала нажмите «Загрузить текст в RAG» для текущего текста.")
+            return
+
+        with st.spinner("Ищем контекст и отправляем его в LLM..."):
+            answer, chunks = answer_with_rag(
+                st.session_state.vectorstore,
+                question,
+                provider=settings["llm_provider"],
+                model=settings["model"],
+                top_k=top_k,
+                max_tokens=settings["max_tokens"],
+            )
+
+        st.markdown("**Ответ LLM по найденному контексту:**")
+        st.markdown(answer)
+
+        st.markdown("**🔍 Использованные чанки:**")
+        for i, chunk in enumerate(chunks, start=1):
+            with st.expander(f"Чанк {i} · score={chunk.score:.3f}"):
+                st.text(chunk.text)
+
 
 
 def create_ui():
@@ -226,4 +265,4 @@ def create_ui():
     with tab4:
         show_all_datasets_ui()
     with tab5:
-        render_rag_tab(text)
+        render_rag_tab(settings, text)

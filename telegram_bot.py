@@ -32,6 +32,11 @@ TOPIC_LABELS = [
 
 ENTITY_TYPES = ["PER", "ORG", "LOC", "DATE", "MONEY"]
 
+# In-memory RAG storage. For a demo/prototype this is enough: each Telegram chat
+# can load its own document and ask questions about it while the bot process runs.
+RAG_STORES: dict[int, object] = {}
+RAG_CHUNK_COUNTS: dict[int, int] = {}
+
 
 def get_active_llm() -> tuple[str, str]:
     provider_name, cfg = get_llm_provider(DEFAULT_LLM_PROVIDER)
@@ -57,6 +62,20 @@ def get_command_text(update: Update) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+def get_command_or_reply_text(update: Update) -> str:
+    """Use command argument first, otherwise use text from replied message."""
+    text = get_command_text(update)
+    if text:
+        return text
+    if update.message and update.message.reply_to_message and update.message.reply_to_message.text:
+        return update.message.reply_to_message.text.strip()
+    return ""
+
+
+def get_chat_id(update: Update) -> int | None:
+    return update.effective_chat.id if update.effective_chat else None
+
+
 def format_scores(scores: dict[str, float]) -> str:
     lines = []
     for label, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
@@ -80,6 +99,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/llm_summary текст — сделать выжимку через LLM\n"
         "/llm_ner текст — найти сущности через LLM\n"
         "/compare текст — сравнить классическую и LLM-классификацию\n\n"
+        "RAG-команды:\n"
+        "/rag_load текст — загрузить документ/текст в RAG\n"
+        "/rag_ask вопрос — ответить по загруженному тексту через LLM\n"
+        "/rag_clear — очистить RAG-память текущего чата\n\n"
         f"Активная LLM: {provider_name} / {model}\n\n"
         "Можно просто отправить обычный текст — я сделаю классическую классификацию."
     )
@@ -222,6 +245,82 @@ async def compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_long(update, answer)
 
 
+async def rag_load_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_command_or_reply_text(update)
+    chat_id = get_chat_id(update)
+
+    if chat_id is None:
+        return
+    if not text:
+        await update.message.reply_text(
+            "После /rag_load пришли текст документа. Ещё можно ответить командой /rag_load на сообщение с длинным текстом."
+        )
+        return
+
+    await update.message.reply_text("Загружаю текст в RAG: режу на чанки и строю эмбеддинги...")
+    from rag_agent import create_vectorstore
+
+    vectorstore, num_chunks = await asyncio.to_thread(create_vectorstore, text)
+    if num_chunks == 0:
+        await update.message.reply_text("Не получилось создать чанки: текст пустой или слишком короткий.")
+        return
+
+    RAG_STORES[chat_id] = vectorstore
+    RAG_CHUNK_COUNTS[chat_id] = num_chunks
+    await update.message.reply_text(
+        f"RAG готов: текст разбит на {num_chunks} чанков. Теперь задай вопрос командой /rag_ask."
+    )
+
+
+async def rag_ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = get_command_text(update)
+    chat_id = get_chat_id(update)
+
+    if chat_id is None:
+        return
+    if not question:
+        await update.message.reply_text("После /rag_ask пришли вопрос по загруженному тексту.")
+        return
+    if chat_id not in RAG_STORES:
+        await update.message.reply_text("Сначала загрузи текст командой /rag_load текст.")
+        return
+
+    await update.message.reply_text("Ищу релевантные чанки и отправляю их в LLM...")
+
+    from rag_agent import answer_with_rag
+
+    provider_name, model = get_active_llm()
+    answer, chunks = await asyncio.to_thread(
+        answer_with_rag,
+        RAG_STORES[chat_id],
+        question,
+        provider_name,
+        model,
+        3,
+        700,
+    )
+
+    sources = "\n".join(
+        f"{i}. Чанк {chunk.index + 1}, score={chunk.score:.3f}: {chunk.text[:220]}..."
+        for i, chunk in enumerate(chunks, start=1)
+    )
+
+    result = "RAG-ответ по документу:\n" + answer
+    if sources:
+        result += "\n\nИспользованные чанки:\n" + sources
+
+    await send_long(update, result)
+
+
+async def rag_clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = get_chat_id(update)
+    if chat_id is None:
+        return
+    RAG_STORES.pop(chat_id, None)
+    RAG_CHUNK_COUNTS.pop(chat_id, None)
+    await update.message.reply_text("RAG-память текущего чата очищена.")
+
+
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -257,6 +356,9 @@ def main():
     app.add_handler(CommandHandler("llm_summary", llm_summary_command))
     app.add_handler(CommandHandler("llm_ner", llm_ner_command))
     app.add_handler(CommandHandler("compare", compare_command))
+    app.add_handler(CommandHandler("rag_load", rag_load_command))
+    app.add_handler(CommandHandler("rag_ask", rag_ask_command))
+    app.add_handler(CommandHandler("rag_clear", rag_clear_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 
     print("Telegram NLP bot is starting...")
