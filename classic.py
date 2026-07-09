@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from config import nlp, embedder, sentiment_analyzer
+from natasha import Doc, Segmenter, NewsEmbedding, NewsNERTagger
 
 
 TOPIC_DESCRIPTIONS = {
@@ -121,7 +122,6 @@ def _ner_spacy(text):
 
 
 def _ner_natasha(text):
-    from natasha import Doc, Segmenter, NewsEmbedding, NewsNERTagger
     segmenter = Segmenter()
     emb = NewsEmbedding()
     ner_tagger = NewsNERTagger(emb)

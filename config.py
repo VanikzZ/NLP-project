@@ -2,8 +2,6 @@ import spacy
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
 
-from llm_config import LLM_PROVIDERS
-
 print("Loading models...")
 
 nlp = spacy.load("ru_core_news_lg")

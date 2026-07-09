@@ -2,44 +2,51 @@ import streamlit as st
 import json
 import html
 import re
-from config import LLM_PROVIDERS, CLASSIC_PROVIDERS
+from llm_config import LLM_PROVIDERS
+from config import CLASSIC_PROVIDERS
 from providers import call_llm
 from classic import classify_classic, classify_sentiment, summarize_classic, ner_classic
-from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMT, SUMMARIZATION_PROMPT, NER_PROMPT
+from prompts import CLASSIFICATION_PROMPT, SENTIMENT_PROMPT, SUMMARIZATION_PROMPT, NER_PROMPT
 from datasets_loader import show_all_datasets_ui
 from rag_agent import create_vectorstore, answer_with_rag
+import hashlib
 
-NER_COLORS = {
+DEFAULT_TEXT = (
+    "Совет директоров компании «ТехноИнвест» 15 марта 2026 года объявил о рекордной "
+    "квартальной прибыли в размере $5,8 млн. Генеральный директор Алексей Морозов "
+    "связал рост с выходом на азиатские рынки. Завод в Шэньчжэне заработает 1 сентября.\n\n"
+    "Тем временем сборная Бразилии разгромила Аргентину со счётом 4:1 в финале "
+    "чемпионата мира по футболу. Нападающий Винисиус Жуниор оформил хет-трик.\n\n"
+    "Учёные из MIT представили новый метод лечения диабета 2 типа. Профессор Джон Смит "
+    "утверждает, что клинические испытания начнутся в июле 2027 года. Бюджет проекта — €120 млн."
+)
+
+
+ENTITY_COLORS = {
     "PER": "#2563eb",
     "PERSON": "#2563eb",
     "ORG": "#16a34a",
     "LOC": "#9333ea",
     "LOCATION": "#9333ea",
     "GPE": "#9333ea",
-    "DATE": "#f97316",
-    "TIME": "#f97316",
+    "DATE": "#ea580c",
+    "TIME": "#ea580c",
     "MONEY": "#dc2626",
     "PERCENT": "#dc2626",
     "MISC": "#64748b",
 }
 
-
-def normalize_ner_label(label):
-    label = str(label).upper().strip()
-    mapping = {
-        "PERSON": "PER",
-        "PER": "PER",
-        "ORG": "ORG",
-        "ORGANIZATION": "ORG",
-        "LOC": "LOC",
-        "LOCATION": "LOC",
-        "GPE": "LOC",
-        "DATE": "DATE",
-        "TIME": "TIME",
-        "MONEY": "MONEY",
-        "PERCENT": "PERCENT",
-    }
-    return mapping.get(label, label)
+ENTITY_NAMES = {
+    "PER": "человек",
+    "PERSON": "человек",
+    "ORG": "организация",
+    "LOC": "локация",
+    "GPE": "локация",
+    "DATE": "дата",
+    "TIME": "время",
+    "MONEY": "деньги",
+    "MISC": "прочее",
+}
 
 
 def extract_ner_items(entities):
@@ -58,105 +65,9 @@ def extract_ner_items(entities):
             continue
 
         if ent_text and ent_label:
-            items.append((str(ent_text), normalize_ner_label(ent_label)))
+            items.append((str(ent_text), ent_label))
 
     return items
-
-
-def render_ner_highlighted_text(source_text, entities, title="Подсветка сущностей"):
-    items = extract_ner_items(entities)
-
-    if not source_text or not items:
-        return
-
-    spans = []
-    lowered = source_text.lower()
-
-    for ent_text, ent_label in items:
-        start = 0
-        target = ent_text.lower()
-
-        while True:
-            idx = lowered.find(target, start)
-            if idx == -1:
-                break
-
-            end = idx + len(ent_text)
-
-            if not any(idx < old_end and end > old_start for old_start, old_end, _ in spans):
-                spans.append((idx, end, ent_label))
-
-            start = end
-
-    if not spans:
-        return
-
-    spans.sort(key=lambda x: x[0])
-
-    result = []
-    last = 0
-
-    for start, end, label in spans:
-        result.append(html.escape(source_text[last:start]))
-
-        color = NER_COLORS.get(label, "#64748b")
-        entity_text = html.escape(source_text[start:end])
-
-        result.append(
-            f'<span style="background:{color}; color:white; padding:2px 6px; '
-            f'border-radius:6px; font-weight:600; white-space:nowrap;">'
-            f'{entity_text} <sup>{label}</sup></span>'
-        )
-
-        last = end
-
-    result.append(html.escape(source_text[last:]))
-
-    st.markdown(f"**{title}:**", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='line-height:2.2; font-size:17px;'>"
-        + "".join(result)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-
-DEFAULT_TEXT = (
-    "Совет директоров компании «ТехноИнвест» 15 марта 2026 года объявил о рекордной "
-    "квартальной прибыли в размере $5,8 млн. Генеральный директор Алексей Морозов "
-    "связал рост с выходом на азиатские рынки. Завод в Шэньчжэне заработает 1 сентября.\n\n"
-    "Тем временем сборная Бразилии разгромила Аргентину со счётом 4:1 в финале "
-    "чемпионата мира по футболу. Нападающий Винисиус Жуниор оформил хет-трик.\n\n"
-    "Учёные из MIT представили новый метод лечения диабета 2 типа. Профессор Джон Смит "
-    "утверждает, что клинические испытания начнутся в июле 2027 года. Бюджет проекта — €120 млн."
-)
-
-
-
-
-ENTITY_COLORS = {
-    "PER": "#2563eb",
-    "PERSON": "#2563eb",
-    "ORG": "#16a34a",
-    "LOC": "#9333ea",
-    "GPE": "#9333ea",
-    "DATE": "#ea580c",
-    "TIME": "#ea580c",
-    "MONEY": "#dc2626",
-    "MISC": "#64748b",
-}
-
-ENTITY_NAMES = {
-    "PER": "человек",
-    "PERSON": "человек",
-    "ORG": "организация",
-    "LOC": "локация",
-    "GPE": "локация",
-    "DATE": "дата",
-    "TIME": "время",
-    "MONEY": "деньги",
-    "MISC": "прочее",
-}
-
 
 def normalize_entity_type(entity_type):
     entity_type = str(entity_type or "MISC").upper().strip()
@@ -165,7 +76,6 @@ def normalize_entity_type(entity_type):
     if entity_type == "GPE":
         return "LOC"
     return entity_type
-
 
 def parse_llm_entities(raw_result):
     """Parse LLM NER answer into a list of {text, type} dicts."""
@@ -189,7 +99,6 @@ def parse_llm_entities(raw_result):
             entities.append({"text": str(ent_text), "type": normalize_entity_type(ent_type)})
     return entities
 
-
 def find_entity_spans(text, entities):
     spans = []
     occupied = [False] * len(text)
@@ -211,9 +120,6 @@ def find_entity_spans(text, entities):
             start = end
     return sorted(spans, key=lambda x: x[0])
 
-
-
-
 def entity_badge_html(entity_type):
     ent_type = normalize_entity_type(entity_type)
     color = ENTITY_COLORS.get(ent_type, "#64748b")
@@ -225,13 +131,11 @@ def entity_badge_html(entity_type):
         f'{html.escape(ent_type)}</span>'
     )
 
-
 def render_entity_list_item(ent):
     ent_text = html.escape(str(ent.get("text", "")))
     ent_type = normalize_entity_type(ent.get("type"))
     badge = entity_badge_html(ent_type)
     st.markdown(f'• <b>{ent_text}</b> → {badge}', unsafe_allow_html=True)
-
 
 def render_entity_legend(entities):
     used_types = []
@@ -252,7 +156,6 @@ def render_entity_legend(entities):
             f'{html.escape(ent_type)} · {html.escape(title)}</span>'
         )
     st.markdown("".join(badges), unsafe_allow_html=True)
-
 
 def render_ner_highlighted_text(text, entities):
     if not entities:
@@ -284,6 +187,9 @@ def render_ner_highlighted_text(text, entities):
         f'border-radius:12px;padding:14px;background:rgba(148,163,184,0.08);">{html_text}</div>',
         unsafe_allow_html=True,
     )
+
+
+
 
 
 def render_sidebar():
@@ -350,7 +256,7 @@ def render_classification_tab(settings, text):
         if st.button("Запустить LLM", key="clf_l"):
             with st.spinner("..."):
                 if mode == "Тональность":
-                    prompt = SENTIMENT_PROMT.format(text=text)
+                    prompt = SENTIMENT_PROMPT.format(text=text)
                 else:
                     prompt = CLASSIFICATION_PROMPT.format(labels=", ".join(labels), text=text)
                 result = call_llm(
@@ -395,8 +301,8 @@ def render_ner_tab(settings, text):
 
     entity_types = st.multiselect(
         "Типы сущностей для LLM",
-        ["PER", "ORG", "LOC", "DATE", "MONEY"],
-        default=["PER", "ORG", "LOC", "DATE", "MONEY"],
+        ["PER", "ORG", "LOC", "DATE", "TIME", "MONEY", "PERCENT", "MISC"],
+        default=["PER", "ORG", "LOC", "DATE", "TIME", "MONEY", "PERCENT", "MISC"]
     )
 
     col1, col2 = st.columns(2)
@@ -426,7 +332,7 @@ def render_ner_tab(settings, text):
             with st.spinner("Ищем сущности через LLM..."):
                 prompt = NER_PROMPT.format(
                     entity_types=", ".join(entity_types),
-                    text=text[:2000],
+                    text=text,
                 )
 
                 result = call_llm(
@@ -459,10 +365,7 @@ def render_ner_tab(settings, text):
                 st.caption(str(exc))
 
 
-
 def render_rag_tab(settings, text):
-    import hashlib
-
     st.header("🤖 RAG — вопрос-ответ по документу")
     st.markdown(
         "Retrieval-Augmented Generation: сначала ищем релевантные чанки в тексте, "
@@ -486,12 +389,16 @@ def render_rag_tab(settings, text):
         st.session_state.rag_text_hash = None
         st.info("Текст изменился. Нажмите «Загрузить текст в RAG», чтобы обновить векторную базу.")
 
+
+    chunk_size = st.slider("Размер чанка (символов)", 50, 1500, 700, 50)
+    overlap = st.slider("Перекрытие чанков (символов)", 0, 500, 120, 20)
+
     col1, col2 = st.columns([1, 2])
 
     with col1:
         if st.button("📥 Загрузить текст в RAG"):
             with st.spinner("Разбиваем текст на чанки и строим эмбеддинги..."):
-                vectorstore, num_chunks = create_vectorstore(text)
+                vectorstore, num_chunks = create_vectorstore(text, chunk_size, overlap)
                 st.session_state.vectorstore = vectorstore
                 st.session_state.num_chunks = num_chunks
                 st.session_state.rag_text_hash = current_hash
@@ -523,6 +430,7 @@ def render_rag_tab(settings, text):
                 model=settings["model"],
                 top_k=top_k,
                 max_tokens=settings["max_tokens"],
+                temperature=settings["temperature"]
             )
 
         st.markdown("**Ответ LLM по найденному контексту:**")
@@ -532,7 +440,6 @@ def render_rag_tab(settings, text):
         for i, chunk in enumerate(chunks, start=1):
             with st.expander(f"Чанк {i} · score={chunk.score:.3f}"):
                 st.text(chunk.text)
-
 
 
 def create_ui():

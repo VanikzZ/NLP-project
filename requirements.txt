@@ -9,7 +9,12 @@ requests
 python-dotenv
 natasha
 python-telegram-bot
-transformers
-datasets>=2.19.0
+datasets
 huggingface_hub<1.16
 pandas
+chromadb
+langchain
+langchain-community
+langchain-classic
+langchain-core
+langchain-text-splitters
