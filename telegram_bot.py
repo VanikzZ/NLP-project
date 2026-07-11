@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import json
 import os
 import re
@@ -141,40 +142,193 @@ def format_scores(scores: dict[str, float]) -> str:
 
 def normalize_entity_type(entity_type) -> str:
     entity_type = str(entity_type or "MISC").upper().strip()
-    if entity_type == "PERSON":
-        return "PER"
-    if entity_type == "GPE":
-        return "LOC"
-    return entity_type
+    aliases = {
+        "PERSON": "PER",
+        "PERSON_NAME": "PER",
+        "ЧЕЛОВЕК": "PER",
+        "ПЕРСОНА": "PER",
+        "NAME": "PER",
+        "ORGANIZATION": "ORG",
+        "COMPANY": "ORG",
+        "КОМПАНИЯ": "ORG",
+        "ОРГАНИЗАЦИЯ": "ORG",
+        "GPE": "LOC",
+        "LOCATION": "LOC",
+        "PLACE": "LOC",
+        "CITY": "LOC",
+        "COUNTRY": "LOC",
+        "МЕСТО": "LOC",
+        "ЛОКАЦИЯ": "LOC",
+        "ГОРОД": "LOC",
+        "СТРАНА": "LOC",
+        "DATETIME": "DATE",
+        "ДАТА": "DATE",
+        "MONEY_AMOUNT": "MONEY",
+        "AMOUNT": "MONEY",
+        "ДЕНЬГИ": "MONEY",
+        "СУММА": "MONEY",
+    }
+    return aliases.get(entity_type, entity_type)
 
 
 def entity_emoji(entity_type: str) -> str:
     return ENTITY_EMOJIS.get(normalize_entity_type(entity_type), "⬜")
 
 
+def _append_entity(entities: list[dict[str, str]], seen: set, text, ent_type) -> None:
+    if text is None or ent_type is None:
+        return
+
+    entity_text = str(text).strip().strip('"').strip("'")
+    entity_type = normalize_entity_type(ent_type)
+    if not entity_text or entity_type not in {"PER", "ORG", "LOC", "DATE", "TIME", "MONEY", "PERCENT", "MISC"}:
+        return
+
+    key = (entity_text.casefold(), entity_type)
+    if key not in seen:
+        seen.add(key)
+        entities.append({"text": entity_text, "type": entity_type})
+
+
 def parse_llm_entities(raw_result: str) -> list[dict[str, str]]:
-    """LLM должна вернуть JSON. Тут убираем code fence и приводим к одному формату."""
-    candidate = raw_result.strip()
+    """Разбирает распространённые форматы NER-ответов разных LLM."""
+    candidate = str(raw_result or "").strip()
+    if not candidate:
+        raise ValueError("LLM вернула пустой ответ")
 
-    if "```" in candidate:
-        match = re.search(r"```(?:json)?\s*(.*?)```", candidate, flags=re.S | re.I)
-        if match:
-            candidate = match.group(1).strip()
+    if candidate.startswith("Ошибка") or candidate.startswith("API ключ"):
+        raise RuntimeError(candidate)
 
-    parsed = json.loads(candidate)
-    if isinstance(parsed, dict):
-        parsed = parsed.get("entities", [])
+    fenced = re.search(r"```(?:json|python)?\s*(.*?)```", candidate, flags=re.S | re.I)
+    if fenced:
+        candidate = fenced.group(1).strip()
 
-    entities = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text") or item.get("entity") or item.get("name")
-        ent_type = item.get("type") or item.get("label") or item.get("entity_type")
-        if text and ent_type:
-            entities.append({"text": str(text), "type": normalize_entity_type(ent_type)})
+    parsed = None
+    parse_errors = []
+
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            parsed = loader(candidate)
+            break
+        except Exception as exc:
+            parse_errors.append(exc)
+
+    if parsed is None:
+        # Модель иногда добавляет пояснение до или после JSON.
+        json_fragment = re.search(r"(\[.*\]|\{.*\})", candidate, flags=re.S)
+        if json_fragment:
+            fragment = json_fragment.group(1)
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    parsed = loader(fragment)
+                    break
+                except Exception as exc:
+                    parse_errors.append(exc)
+
+    entities: list[dict[str, str]] = []
+    seen = set()
+
+    def consume(value, forced_type=None):
+        if isinstance(value, dict):
+            wrapper = None
+            for key in ("entities", "result", "data", "items", "ner", "named_entities", "сущности"):
+                if key in value:
+                    wrapper = value[key]
+                    break
+            if wrapper is not None:
+                consume(wrapper)
+                return
+
+            text_value = (
+                value.get("text")
+                or value.get("entity")
+                or value.get("name")
+                or value.get("word")
+                or value.get("value")
+                or value.get("entity_text")
+                or value.get("span")
+            )
+            type_value = (
+                value.get("type")
+                or value.get("label")
+                or value.get("entity_type")
+                or value.get("entity_group")
+                or value.get("category")
+                or value.get("tag")
+                or forced_type
+            )
+            if text_value and type_value:
+                _append_entity(entities, seen, text_value, type_value)
+                return
+
+            # Формат {"PER": ["Иван"], "ORG": ["Google"]}
+            consumed_typed_map = False
+            for key, item in value.items():
+                normalized_key = normalize_entity_type(key)
+                if normalized_key in {"PER", "ORG", "LOC", "DATE", "TIME", "MONEY", "PERCENT", "MISC"}:
+                    consume(item, normalized_key)
+                    consumed_typed_map = True
+            if consumed_typed_map:
+                return
+
+            # Формат {"Иван Петров": "PER"}
+            if len(value) == 1:
+                only_text, only_type = next(iter(value.items()))
+                _append_entity(entities, seen, only_text, only_type)
+            return
+
+        if isinstance(value, (list, tuple)):
+            if forced_type is not None:
+                for item in value:
+                    if isinstance(item, str):
+                        _append_entity(entities, seen, item, forced_type)
+                    else:
+                        consume(item, forced_type)
+                return
+
+            # Формат ["Иван Петров", "PER"]
+            if len(value) >= 2 and isinstance(value[0], str) and isinstance(value[1], str):
+                possible_type = normalize_entity_type(value[1])
+                if possible_type in {"PER", "ORG", "LOC", "DATE", "TIME", "MONEY", "PERCENT", "MISC"}:
+                    _append_entity(entities, seen, value[0], possible_type)
+                    return
+
+            for item in value:
+                consume(item)
+            return
+
+        if isinstance(value, str) and forced_type is not None:
+            _append_entity(entities, seen, value, forced_type)
+
+    if parsed is not None:
+        consume(parsed)
+
+    # Последний запасной вариант: строки вида "PER: Иван" или "Иван — PER".
+    if not entities:
+        allowed = r"PER|PERSON|ORG|ORGANIZATION|LOC|LOCATION|GPE|DATE|TIME|MONEY|PERCENT|MISC"
+        for line in candidate.splitlines():
+            clean = line.strip().lstrip("-•*0123456789. ")
+            if not clean:
+                continue
+
+            match = re.match(rf"^({allowed})\s*[:=→-]\s*(.+)$", clean, flags=re.I)
+            if match:
+                _append_entity(entities, seen, match.group(2), match.group(1))
+                continue
+
+            match = re.match(rf"^(.+?)\s*(?:→|—|-|:)\s*({allowed})(?:\s*\(.*?\))?$", clean, flags=re.I)
+            if match:
+                _append_entity(entities, seen, match.group(1), match.group(2))
+                continue
+
+            match = re.match(rf"^(.+?)\s*\(({allowed})\)$", clean, flags=re.I)
+            if match:
+                _append_entity(entities, seen, match.group(1), match.group(2))
+
+    if parsed is None and not entities:
+        raise ValueError("В ответе LLM не найден распознаваемый JSON или список сущностей")
+
     return entities
-
 
 def format_entities(entities: list[dict[str, str]], title: str) -> str:
     if not entities:
@@ -197,6 +351,56 @@ def make_llm_summary_prompt(text: str, num_sentences: int = 2) -> str:
         "Если текст короткий, всё равно переформулируй его короче.\n\n"
         f"Текст:\n{text}\n\nВыжимка:"
     )
+
+
+def make_llm_ner_prompt(text: str, retry: bool = False) -> str:
+    retry_note = (
+        "Проверь текст повторно особенно внимательно: предыдущая попытка не дала сущностей.\n"
+        if retry else ""
+    )
+    return (
+        "Ты выполняешь NER — распознавание именованных сущностей.\n"
+        f"{retry_note}"
+        "Разрешённые типы: PER — люди; ORG — компании, учреждения и команды; "
+        "LOC — города, страны и места; DATE — даты; MONEY — денежные суммы.\n"
+        "Найди ВСЕ явно названные сущности. Не пропускай полные имена, названия организаций, "
+        "географические названия, даты и суммы.\n"
+        "Верни ТОЛЬКО JSON-массив без Markdown и пояснений.\n"
+        "Каждый элемент обязан иметь ровно поля text и type.\n"
+        "Пример ответа: "
+        '[{"text":"Иван Петров","type":"PER"},'
+        '{"text":"Google","type":"ORG"},'
+        '{"text":"Минск","type":"LOC"},'
+        '{"text":"10 июля 2026 года","type":"DATE"},'
+        '{"text":"5 миллионов долларов","type":"MONEY"}]\n'
+        "Пустой массив [] допустим только если в тексте действительно нет ни одной такой сущности.\n\n"
+        f"Текст:\n{text}\n\nJSON:"
+    )
+
+
+def run_llm_ner(provider_name: str, model: str, text: str) -> tuple[list[dict[str, str]], str]:
+    """Запрашивает NER и один раз перепроверяет пустой ответ."""
+    raw_result = call_llm(
+        provider_name,
+        model,
+        make_llm_ner_prompt(text, retry=False),
+        0.0,
+        900,
+    )
+    entities = parse_llm_entities(raw_result)
+
+    if entities:
+        return entities, raw_result
+
+    retry_result = call_llm(
+        provider_name,
+        model,
+        make_llm_ner_prompt(text, retry=True),
+        0.0,
+        900,
+    )
+    retry_entities = parse_llm_entities(retry_result)
+    return retry_entities, retry_result
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -331,16 +535,16 @@ async def llm_ner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["last_text"] = text
     await update.message.reply_text("Ищу сущности через LLM...")
     provider_name, model = get_active_llm()
-    prompt = NER_PROMPT.format(entity_types=", ".join(ENTITY_TYPES), text=text[:3000])
-    result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 700)
-
     try:
-        entities = parse_llm_entities(result)
+        entities, _raw_result = await asyncio.to_thread(
+            run_llm_ner, provider_name, model, text[:3000]
+        )
         await send_long(update, format_entities(entities, "🧠 LLM-сущности:"), reply_markup=main_menu())
-    except Exception:
+    except Exception as exc:
+        print(f"LLM NER error: {exc}")
         await send_long(
             update,
-            "🧠 LLM-сущности:\nНе удалось красиво разобрать ответ модели. Попробуй повторить запрос или сделать текст короче.",
+            "🧠 LLM-сущности:\nНе удалось обработать ответ модели. Подробность ошибки выведена в терминал.",
             reply_markup=main_menu(),
         )
 
@@ -376,7 +580,7 @@ async def rag_load_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text
         return
 
     await update.effective_message.reply_text("📥 Загружаю текст в RAG: режу на чанки и строю эмбеддинги...")
-    from rag_agent import create_vectorstore
+    from rag_agent_manual import create_vectorstore
 
     vectorstore, num_chunks = await asyncio.to_thread(create_vectorstore, text)
     if num_chunks == 0:
@@ -413,7 +617,7 @@ async def answer_rag_question(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.effective_message.reply_text("🔎 Ищу релевантные чанки и отправляю их в LLM...")
 
-    from rag_agent import answer_with_rag
+    from rag_agent_manual import answer_with_rag
 
     provider_name, model = get_active_llm()
     answer, chunks = await asyncio.to_thread(
@@ -559,15 +763,20 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "llm_ner":
         await query.message.reply_text("Ищу сущности через LLM...")
         provider_name, model = get_active_llm()
-        prompt = NER_PROMPT.format(entity_types=", ".join(ENTITY_TYPES), text=text[:3000])
-        result = await asyncio.to_thread(call_llm, provider_name, model, prompt, 0.0, 700)
         try:
-            entities = parse_llm_entities(result)
-            await send_long_to_message(query.message, format_entities(entities, "🧠 LLM-сущности:"), reply_markup=main_menu())
-        except Exception:
+            entities, _raw_result = await asyncio.to_thread(
+                run_llm_ner, provider_name, model, text[:3000]
+            )
             await send_long_to_message(
                 query.message,
-                "🧠 LLM-сущности:\nНе удалось красиво разобрать ответ модели. Попробуй повторить запрос или сделать текст короче.",
+                format_entities(entities, "🧠 LLM-сущности:"),
+                reply_markup=main_menu(),
+            )
+        except Exception as exc:
+            print(f"LLM NER error: {exc}")
+            await send_long_to_message(
+                query.message,
+                "🧠 LLM-сущности:\nНе удалось обработать ответ модели. Подробность ошибки выведена в терминал.",
                 reply_markup=main_menu(),
             )
 
